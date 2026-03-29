@@ -72,7 +72,7 @@ lib/
 
 ---
 
-## 👥 Role Capabilities
+## Role Capabilities
 
 | Feature              | Admin | Teacher | Student | Parent |
 |----------------------|:-----:|:-------:|:-------:|:------:|
@@ -88,7 +88,7 @@ lib/
 
 ---
 
-## 🚀 Setup & Installation
+## Setup & Installation
 
 ### Prerequisites
 - Flutter SDK ≥ 3.3.0
