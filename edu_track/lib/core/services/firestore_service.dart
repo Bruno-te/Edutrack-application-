@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../models/assignment_model.dart';
@@ -61,13 +63,19 @@ class FirestoreService {
     await updateUser(teacherId, {'classId': courseId});
   }
 
+  /// Adds [courseId] to each student's `courseIds` without removing prior
+  /// enrollments (multi-course support). Legacy `classId` is unchanged.
   Future<void> assignStudentsToCourse(
     List<String> studentIds,
     String courseId,
   ) async {
+    if (courseId.trim().isEmpty) return;
+    final cid = courseId.trim();
     final batch = _db.batch();
     for (final sid in studentIds) {
-      batch.update(_users.doc(sid), {'classId': courseId});
+      batch.update(_users.doc(sid), {
+        'courseIds': FieldValue.arrayUnion([cid]),
+      });
     }
     await batch.commit();
   }
@@ -81,6 +89,14 @@ class FirestoreService {
 
   Future<void> updateUser(String uid, Map<String, dynamic> data) async {
     await _users.doc(uid).update(data);
+  }
+
+  /// Sets the parent's `studentId` to the child's Firebase user id (Account ID).
+  Future<void> linkParentToChild({
+    required String parentUserId,
+    required String childStudentUserId,
+  }) async {
+    await updateUser(parentUserId, {'studentId': childStudentUserId});
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -267,6 +283,26 @@ class FirestoreService {
     });
   }
 
+  /// Assignments for any of [courseIds] (student enrolled in multiple courses).
+  /// Firestore `whereIn` supports up to 30 values.
+  Stream<List<AssignmentModel>> assignmentsForCourses(List<String> courseIds) {
+    final ids = courseIds.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet().toList();
+    if (ids.isEmpty) {
+      return Stream.value([]);
+    }
+    if (ids.length > 30) {
+      ids.removeRange(30, ids.length);
+    }
+    return _assignments
+        .where('classId', whereIn: ids)
+        .snapshots()
+        .map((snap) {
+      final list = snap.docs.map(AssignmentModel.fromFirestore).toList();
+      list.sort((a, b) => b.dueDate.compareTo(a.dueDate));
+      return list;
+    });
+  }
+
   Stream<List<AssignmentModel>> allAssignments() {
     return _assignments
         .snapshots()
@@ -324,6 +360,15 @@ class FirestoreService {
         .map((snap) => snap.docs.map(SubmissionModel.fromFirestore).toList());
   }
 
+  /// All submissions (for teacher/admin views; filtered in app by assignment).
+  Stream<List<SubmissionModel>> allSubmissions() {
+    return _submissions.snapshots().map((snap) {
+      final list = snap.docs.map(SubmissionModel.fromFirestore).toList();
+      list.sort((a, b) => b.submittedAt.compareTo(a.submittedAt));
+      return list;
+    });
+  }
+
   Future<List<SubmissionModel>> getSubmissionsForStudentData(
     String studentId,
   ) async {
@@ -331,6 +376,139 @@ class FirestoreService {
     final list = snap.docs.map(SubmissionModel.fromFirestore).toList();
     list.sort((a, b) => b.submittedAt.compareTo(a.submittedAt));
     return list;
+  }
+
+  /// Live updates for student/parent home stats (grades, attendance, submissions).
+  Stream<
+      ({
+        List<GradeModel> grades,
+        List<AttendanceModel> attendance,
+        List<SubmissionModel> submissions,
+      })> watchStudentHomeData(String studentId) {
+    StreamSubscription<List<GradeModel>>? subG;
+    StreamSubscription<List<AttendanceModel>>? subA;
+    StreamSubscription<List<SubmissionModel>>? subS;
+
+    var grades = <GradeModel>[];
+    var attendance = <AttendanceModel>[];
+    var submissions = <SubmissionModel>[];
+
+    late final StreamController<
+        ({
+          List<GradeModel> grades,
+          List<AttendanceModel> attendance,
+          List<SubmissionModel> submissions,
+        })> controller;
+    controller = StreamController<
+        ({
+          List<GradeModel> grades,
+          List<AttendanceModel> attendance,
+          List<SubmissionModel> submissions,
+        })>(
+      sync: true,
+      onListen: () {
+        void push() {
+          if (controller.isClosed) return;
+          final subs = List<SubmissionModel>.from(submissions)
+            ..sort((a, b) => b.submittedAt.compareTo(a.submittedAt));
+          controller.add((
+            grades: List<GradeModel>.from(grades),
+            attendance: List<AttendanceModel>.from(attendance),
+            submissions: subs,
+          ));
+        }
+
+        subG = gradesForStudent(studentId).listen(
+          (g) {
+            grades = g;
+            push();
+          },
+          onError: controller.addError,
+        );
+        subA = attendanceForStudent(studentId).listen(
+          (a) {
+            attendance = a;
+            push();
+          },
+          onError: controller.addError,
+        );
+        subS = submissionsForStudent(studentId).listen(
+          (s) {
+            submissions = s;
+            push();
+          },
+          onError: controller.addError,
+        );
+      },
+      onCancel: () async {
+        await subG?.cancel();
+        await subA?.cancel();
+        await subS?.cancel();
+        subG = null;
+        subA = null;
+        subS = null;
+      },
+    );
+
+    return controller.stream;
+  }
+
+  /// Live grades + attendance for the Performance screen (student/parent scoped).
+  Stream<
+      ({
+        List<GradeModel> grades,
+        List<AttendanceModel> attendance,
+      })> watchPerformanceForStudent(String studentId) {
+    StreamSubscription<List<GradeModel>>? subG;
+    StreamSubscription<List<AttendanceModel>>? subA;
+
+    var grades = <GradeModel>[];
+    var attendance = <AttendanceModel>[];
+
+    late final StreamController<
+        ({
+          List<GradeModel> grades,
+          List<AttendanceModel> attendance,
+        })> controller;
+    controller = StreamController<
+        ({
+          List<GradeModel> grades,
+          List<AttendanceModel> attendance,
+        })>(
+      sync: true,
+      onListen: () {
+        void push() {
+          if (controller.isClosed) return;
+          controller.add((
+            grades: List<GradeModel>.from(grades),
+            attendance: List<AttendanceModel>.from(attendance),
+          ));
+        }
+
+        subG = gradesForStudent(studentId).listen(
+          (g) {
+            grades = g;
+            push();
+          },
+          onError: controller.addError,
+        );
+        subA = attendanceForStudent(studentId).listen(
+          (a) {
+            attendance = a;
+            push();
+          },
+          onError: controller.addError,
+        );
+      },
+      onCancel: () async {
+        await subG?.cancel();
+        await subA?.cancel();
+        subG = null;
+        subA = null;
+      },
+    );
+
+    return controller.stream;
   }
 
   // ═══════════════════════════════════════════════════════════════

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 
@@ -96,6 +97,14 @@ class _ProfileBody extends StatelessWidget {
                           user.role.substring(1),
                     ),
                     _InfoItem(
+                      icon: Icons.fingerprint_outlined,
+                      label: 'Account ID',
+                      value: user.id,
+                      enableCopy: true,
+                      copyHint:
+                          'Firebase user id — share with teachers/admins for grades and attendance.',
+                    ),
+                    _InfoItem(
                       icon: Icons.calendar_today_outlined,
                       label: 'Member Since',
                       value: DateFormat('MMMM d, y')
@@ -107,7 +116,15 @@ class _ProfileBody extends StatelessWidget {
                         label: 'Student ID',
                         value: user.studentId!,
                       ),
-                    if (user.classId != null)
+                    if (user.role == 'student' &&
+                        user.enrolledCourseIds.isNotEmpty)
+                      _InfoItem(
+                        icon: Icons.school_outlined,
+                        label:
+                            user.enrolledCourseIds.length > 1 ? 'Courses' : 'Course',
+                        value: user.enrolledCourseIds.join(', '),
+                      )
+                    else if (user.classId != null)
                       _InfoItem(
                         icon: Icons.class_outlined,
                         label: 'Class',
@@ -185,8 +202,17 @@ class _InfoItem {
   final IconData icon;
   final String label;
   final String value;
-  const _InfoItem(
-      {required this.icon, required this.label, required this.value});
+  final bool enableCopy;
+  /// Shown as subtle hint under the value when [enableCopy] is true.
+  final String? copyHint;
+
+  const _InfoItem({
+    required this.icon,
+    required this.label,
+    required this.value,
+    this.enableCopy = false,
+    this.copyHint,
+  });
 }
 
 class _InfoCard extends StatelessWidget {
@@ -232,14 +258,46 @@ class _InfoCard extends StatelessWidget {
                                   fontSize: 11,
                                   color: AppColors.textHint)),
                           const SizedBox(height: 2),
-                          Text(item.value,
+                          SelectableText(
+                            item.value,
+                            style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                                color: AppColors.textPrimary),
+                          ),
+                          if (item.enableCopy &&
+                              item.copyHint != null &&
+                              item.copyHint!.isNotEmpty) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              item.copyHint!,
                               style: const TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w500,
-                                  color: AppColors.textPrimary)),
+                                fontSize: 11,
+                                color: AppColors.textSecondary,
+                                height: 1.25,
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     ),
+                    if (item.enableCopy)
+                      IconButton(
+                        tooltip: 'Copy',
+                        icon: const Icon(Icons.copy_outlined, size: 20),
+                        color: AppColors.primary,
+                        onPressed: () async {
+                          await Clipboard.setData(
+                              ClipboardData(text: item.value));
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Account ID copied'),
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                        },
+                      ),
                   ],
                 ),
               ),

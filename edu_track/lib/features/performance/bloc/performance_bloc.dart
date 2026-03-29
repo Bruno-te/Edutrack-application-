@@ -1,4 +1,5 @@
 import 'package:bloc/bloc.dart';
+import 'package:bloc_concurrency/bloc_concurrency.dart';
 import 'package:equatable/equatable.dart';
 
 import '../../../core/models/attendance_model.dart';
@@ -13,7 +14,7 @@ class PerformanceBloc extends Bloc<PerformanceEvent, PerformanceState> {
 
   PerformanceBloc({required this.firestoreService})
       : super(PerformanceInitial()) {
-    on<PerformanceLoadRequested>(_onLoad);
+    on<PerformanceLoadRequested>(_onLoad, transformer: restartable());
   }
 
   Future<void> _onLoad(
@@ -21,24 +22,29 @@ class PerformanceBloc extends Bloc<PerformanceEvent, PerformanceState> {
       Emitter<PerformanceState> emit) async {
     emit(PerformanceLoading());
     try {
-      List<GradeModel> grades;
-      List<AttendanceModel> attendance;
-
-      if (event.studentId != null) {
-        grades = await firestoreService
-            .getGradesForStudent(event.studentId!);
-        attendance = await firestoreService
-            .getAttendanceForStudent(event.studentId!);
-      } else {
-        // For teacher/admin: load analytics data without composite indexes.
-        grades = await firestoreService.getAllGrades();
-        attendance = await firestoreService.getAllAttendance();
+      final sid = event.studentId?.trim();
+      if (sid != null && sid.isNotEmpty) {
+        await emit.forEach(
+          firestoreService.watchPerformanceForStudent(sid),
+          onData: (data) => PerformanceLoaded(
+            grades: data.grades,
+            attendance: data.attendance,
+          ),
+          onError: (e, _) => PerformanceError(e.toString()),
+        );
+        return;
       }
 
-      emit(PerformanceLoaded(
-        grades: grades,
-        attendance: attendance,
-      ));
+      if (event.loadGlobalAnalytics) {
+        final grades = await firestoreService.getAllGrades();
+        final attendance = await firestoreService.getAllAttendance();
+        emit(PerformanceLoaded(
+          grades: grades,
+          attendance: attendance,
+        ));
+      } else {
+        emit(const PerformanceLoaded(grades: [], attendance: []));
+      }
     } catch (e) {
       emit(PerformanceError(e.toString()));
     }

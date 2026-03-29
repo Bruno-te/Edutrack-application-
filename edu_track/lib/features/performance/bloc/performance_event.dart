@@ -8,7 +8,12 @@ abstract class PerformanceEvent extends Equatable {
 
 class PerformanceLoadRequested extends PerformanceEvent {
   final String? studentId;
-  const PerformanceLoadRequested({this.studentId});
+  /// When true and [studentId] is empty, load all grades/attendance (admin/teacher analytics).
+  final bool loadGlobalAnalytics;
+  const PerformanceLoadRequested({
+    this.studentId,
+    this.loadGlobalAnalytics = false,
+  });
   @override
-  List<Object?> get props => [studentId];
+  List<Object?> get props => [studentId, loadGlobalAnalytics];
 }

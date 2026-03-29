@@ -3,6 +3,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/constants/app_colors.dart';
+import '../../../core/models/course_model.dart';
 import '../../../core/models/grade_model.dart';
 import '../../../core/models/user_model.dart';
 import '../../../core/services/firestore_service.dart';
@@ -502,6 +503,7 @@ class _AddGradeSheetState extends State<_AddGradeSheet> {
   final _formKey = GlobalKey<FormState>();
   final _studentNameCtrl = TextEditingController();
   final _studentIdCtrl = TextEditingController();
+  final _manualStudentIdCtrl = TextEditingController();
   final _subjectCtrl = TextEditingController();
   final _scoreCtrl = TextEditingController();
   final _maxScoreCtrl = TextEditingController(text: '100');
@@ -509,7 +511,12 @@ class _AddGradeSheetState extends State<_AddGradeSheet> {
 
   String _gradeType = 'Exam';
   String _term = 'Term 1';
-  bool _loading = false;
+  bool _loadingRoster = true;
+
+  List<CourseModel> _courses = const [];
+  List<UserModel> _allStudents = const [];
+  String? _courseId;
+  String? _selectedStudentId;
 
   final List<String> _gradeTypes = [
     'Exam', 'Quiz', 'Assignment', 'Project'
@@ -517,9 +524,92 @@ class _AddGradeSheetState extends State<_AddGradeSheet> {
   final List<String> _terms = ['Term 1', 'Term 2', 'Term 3'];
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadRoster());
+  }
+
+  Future<void> _loadRoster() async {
+    final fs = context.read<FirestoreService>();
+    try {
+      final courses = await fs.getCourses();
+      final students = await fs.getUsersByRole('student');
+      if (!mounted) return;
+
+      final merged = List<CourseModel>.from(courses);
+      final tid = widget.teacher.classId?.trim();
+      if (tid != null &&
+          tid.isNotEmpty &&
+          !merged.any((c) => c.id == tid)) {
+        merged.insert(
+          0,
+          CourseModel(
+            id: tid,
+            name: 'My class ($tid)',
+            createdAt: DateTime.now(),
+          ),
+        );
+      }
+
+      String? initialCourse = tid;
+      if (initialCourse == null || initialCourse.isEmpty) {
+        initialCourse = merged.isNotEmpty ? merged.first.id : null;
+      } else if (!merged.any((c) => c.id == initialCourse)) {
+        initialCourse = merged.isNotEmpty ? merged.first.id : null;
+      }
+
+      setState(() {
+        _courses = courses;
+        _allStudents = students;
+        _loadingRoster = false;
+        _courseId = initialCourse;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _loadingRoster = false);
+    }
+  }
+
+  List<CourseModel> _mergedCourses() {
+    final out = List<CourseModel>.from(_courses);
+    final tid = widget.teacher.classId?.trim();
+    if (tid != null &&
+        tid.isNotEmpty &&
+        !out.any((c) => c.id == tid)) {
+      out.insert(
+        0,
+        CourseModel(
+          id: tid,
+          name: 'My class ($tid)',
+          createdAt: DateTime.now(),
+        ),
+      );
+    }
+    return out;
+  }
+
+  List<UserModel> _rosterForCourseId(String? courseId) {
+    final cid = courseId?.trim();
+    if (cid == null || cid.isEmpty) return [];
+    final list =
+        _allStudents.where((s) => s.isEnrolledInCourse(cid)).toList();
+    list.sort((a, b) => a.fullName.compareTo(b.fullName));
+    return list;
+  }
+
+  void _applyStudent(UserModel s) {
+    setState(() {
+      _selectedStudentId = s.id;
+      _studentIdCtrl.text = s.id;
+      _studentNameCtrl.text = s.fullName;
+      _manualStudentIdCtrl.clear();
+    });
+  }
+
+  @override
   void dispose() {
     _studentNameCtrl.dispose();
     _studentIdCtrl.dispose();
+    _manualStudentIdCtrl.dispose();
     _subjectCtrl.dispose();
     _scoreCtrl.dispose();
     _maxScoreCtrl.dispose();
@@ -529,32 +619,106 @@ class _AddGradeSheetState extends State<_AddGradeSheet> {
 
   Future<void> _submit() async {
     if (_formKey.currentState?.validate() != true) return;
-    setState(() => _loading = true);
+
+    final courseItems = _mergedCourses();
+    if (courseItems.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No course available. Create a course in Admin first.'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+
+    final classId = (_courseId != null &&
+            courseItems.any((c) => c.id == _courseId))
+        ? _courseId!.trim()
+        : courseItems.first.id.trim();
+
+    var studentId = _manualStudentIdCtrl.text.trim();
+    if (studentId.isEmpty) studentId = _studentIdCtrl.text.trim();
+    if (studentId.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Select a student or paste their Account ID.'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+
+    final fs = context.read<FirestoreService>();
+    final studentUser = await fs.getUser(studentId);
+    if (studentUser == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No user found for that Account ID. Use Profile → Account ID.',
+          ),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+    if (!studentUser.isEnrolledInCourse(classId)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Student is not enrolled in course "$classId". '
+            'Assign them in Admin → Courses.',
+          ),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+
+    final name = _studentNameCtrl.text.trim().isEmpty
+        ? studentUser.fullName
+        : _studentNameCtrl.text.trim();
 
     final maxScore = double.tryParse(_maxScoreCtrl.text) ?? 100;
     final grade = GradeModel(
       id: '',
-      studentId: _studentIdCtrl.text.trim(),
-      studentName: _studentNameCtrl.text.trim(),
+      studentId: studentId,
+      studentName: name,
       subject: _subjectCtrl.text.trim(),
       score: double.parse(_scoreCtrl.text),
       maxScore: maxScore,
       gradeType: _gradeType,
       term: _term,
       teacherId: widget.teacher.id,
-      classId: widget.teacher.classId,
+      classId: classId,
       remarks: _remarksCtrl.text.trim().isEmpty
           ? null
           : _remarksCtrl.text.trim(),
       date: DateTime.now(),
     );
 
+    if (!mounted) return;
     context.read<GradesBloc>().add(GradeAddRequested(grade));
     Navigator.pop(context);
   }
 
   @override
   Widget build(BuildContext context) {
+    final courseItems = _mergedCourses();
+    final effectiveCourseId = courseItems.isEmpty
+        ? null
+        : (courseItems.any((c) => c.id == _courseId)
+            ? _courseId
+            : courseItems.first.id);
+    final roster = _rosterForCourseId(effectiveCourseId);
+    final studentDropdownValue =
+        roster.any((s) => s.id == _selectedStudentId)
+            ? _selectedStudentId
+            : null;
+
     return Padding(
       padding: EdgeInsets.only(
         left: 24,
@@ -579,21 +743,114 @@ class _AddGradeSheetState extends State<_AddGradeSheet> {
                     icon: const Icon(Icons.close)),
               ],
             ),
+            const SizedBox(height: 8),
+            Text(
+              'Choose the course and a student enrolled in it (same as attendance).',
+              style: TextStyle(
+                fontSize: 12,
+                color: AppColors.textSecondary.withOpacity(0.95),
+                height: 1.35,
+              ),
+            ),
             const SizedBox(height: 16),
-            SPMTextField(
-              label: 'Student Name',
-              hint: 'Full name',
-              controller: _studentNameCtrl,
-              validator: (v) => Validators.required(v, 'Student name'),
-            ),
-            const SizedBox(height: 12),
-            SPMTextField(
-              label: 'Student ID',
-              hint: 'STU-001',
-              controller: _studentIdCtrl,
-              validator: (v) => Validators.required(v, 'Student ID'),
-            ),
-            const SizedBox(height: 12),
+            if (_loadingRoster)
+              const Padding(
+                padding: EdgeInsets.all(24),
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (courseItems.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                child: Text(
+                  'No courses found. Ask an admin to create courses and assign students.',
+                  style: TextStyle(
+                    color: AppColors.warning.withOpacity(0.95),
+                    fontSize: 13,
+                  ),
+                ),
+              )
+            else ...[
+              DropdownButtonFormField<String>(
+                value: effectiveCourseId,
+                items: courseItems
+                    .map(
+                      (c) => DropdownMenuItem(
+                        value: c.id,
+                        child: Text(
+                          c.name.isEmpty ? c.id : '${c.name} (${c.id})',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (v) {
+                  if (v == null) return;
+                  setState(() {
+                    _courseId = v;
+                    _selectedStudentId = null;
+                    _studentIdCtrl.clear();
+                    _studentNameCtrl.clear();
+                    _manualStudentIdCtrl.clear();
+                  });
+                },
+                decoration: const InputDecoration(
+                  labelText: 'Course',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              if (roster.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    'No students in this course. Assign students in Admin → Courses.',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: AppColors.textSecondary.withOpacity(0.95),
+                    ),
+                  ),
+                )
+              else
+                DropdownButtonFormField<String>(
+                  value: studentDropdownValue,
+                  hint: const Text('Select student'),
+                  items: roster
+                      .map(
+                        (s) => DropdownMenuItem(
+                          value: s.id,
+                          child: Text(
+                            s.fullName,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (id) {
+                    if (id == null) return;
+                    final s =
+                        _allStudents.firstWhere((x) => x.id == id);
+                    _applyStudent(s);
+                  },
+                  decoration: const InputDecoration(
+                    labelText: 'Student',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              const SizedBox(height: 12),
+              SPMTextField(
+                label: 'Student name',
+                hint: 'Filled when you select a student',
+                controller: _studentNameCtrl,
+                validator: (v) => Validators.required(v, 'Student name'),
+              ),
+              const SizedBox(height: 12),
+              SPMTextField(
+                label: 'Account ID (optional)',
+                hint: 'If not listed above, paste Account ID from Profile',
+                controller: _manualStudentIdCtrl,
+              ),
+              const SizedBox(height: 12),
+            ],
             SPMTextField(
               label: 'Subject',
               hint: 'e.g. Mathematics',
@@ -682,16 +939,8 @@ class _AddGradeSheetState extends State<_AddGradeSheet> {
             ),
             const SizedBox(height: 20),
             ElevatedButton(
-              onPressed: _loading ? null : _submit,
-              child: _loading
-                  ? const SizedBox(
-                      height: 20,
-                      width: 20,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          valueColor:
-                              AlwaysStoppedAnimation(Colors.white)))
-                  : const Text('Save Grade'),
+              onPressed: _submit,
+              child: const Text('Save Grade'),
             ),
           ],
         ),

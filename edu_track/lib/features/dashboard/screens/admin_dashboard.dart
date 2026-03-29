@@ -12,6 +12,7 @@ import '../../auth/bloc/auth_bloc.dart';
 import '../../grades/screens/grades_screen.dart';
 import '../../performance/screens/performance_screen.dart';
 import '../../courses/screens/courses_screen.dart';
+import '../../family/screens/parent_linking_screen.dart';
 
 class AdminDashboard extends StatefulWidget {
   const AdminDashboard({super.key});
@@ -59,7 +60,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
       ),
       const GradesScreen(),
       const AttendanceScreen(),
-      const PerformanceScreen(),
+      const PerformanceScreen(loadGlobalAnalytics: true),
       const AssignmentsScreen(),
       const CoursesScreen(),
     ];
@@ -186,6 +187,28 @@ class _AdminHome extends StatelessWidget {
                         ),
                       ],
                     ),
+              const SizedBox(height: 24),
+
+              const SectionHeader(title: 'Family & accounts'),
+              const SizedBox(height: 12),
+              Card(
+                child: ListTile(
+                  leading: Icon(Icons.family_restroom_outlined,
+                      color: AppColors.primary, size: 28),
+                  title: const Text('Link parents to students'),
+                  subtitle: const Text(
+                    'Parents need their child’s Account ID on their profile to see grades and attendance.',
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const ParentLinkingScreen(),
+                      ),
+                    );
+                  },
+                ),
+              ),
               const SizedBox(height: 24),
 
               // Recent Students

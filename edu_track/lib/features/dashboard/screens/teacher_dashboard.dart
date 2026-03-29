@@ -32,7 +32,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
       _TeacherHome(user: user),
       GradesScreen(teacherId: user.id),
       AttendanceScreen(teacherId: user.id),
-      const PerformanceScreen(),
+      const PerformanceScreen(loadGlobalAnalytics: true),
       AssignmentsScreen(teacherId: user.id),
     ];
 
@@ -101,7 +101,8 @@ class _TeacherHomeState extends State<_TeacherHome> {
 
     if (classId != null && classId.isNotEmpty) {
       final students = await fs.getUsersByRole('student');
-      studentCount = students.where((s) => s.classId == classId).length;
+      studentCount =
+          students.where((s) => s.isEnrolledInCourse(classId)).length;
 
       assignments = await fs.getAssignmentsForClass(classId);
       grades = await fs.getGradesForClass(classId);

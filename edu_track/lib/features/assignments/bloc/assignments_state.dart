@@ -12,10 +12,13 @@ class AssignmentsLoading extends AssignmentsState {}
 
 class AssignmentsLoaded extends AssignmentsState {
   final List<AssignmentModel> assignments;
+  /// Submissions for the current scope (student’s rows, or staff-filtered list).
+  final List<SubmissionModel> submissions;
   final String? studentId;
 
   const AssignmentsLoaded({
     required this.assignments,
+    this.submissions = const [],
     this.studentId,
   });
 
@@ -28,7 +31,7 @@ class AssignmentsLoaded extends AssignmentsState {
       .toList();
 
   @override
-  List<Object?> get props => [assignments, studentId];
+  List<Object?> get props => [assignments, submissions, studentId];
 }
 
 class AssignmentsError extends AssignmentsState {

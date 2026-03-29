@@ -11,6 +11,37 @@ import '../../../core/widgets/shared_widgets.dart';
 import '../../auth/bloc/auth_bloc.dart';
 import '../bloc/assignments_bloc.dart';
 
+SubmissionModel? submissionForAssignment(
+  List<SubmissionModel> submissions,
+  String assignmentId,
+  String? viewerStudentId,
+) {
+  final sid = viewerStudentId?.trim();
+  if (sid == null || sid.isEmpty) return null;
+  SubmissionModel? best;
+  for (final s in submissions) {
+    if (s.assignmentId != assignmentId || s.studentId != sid) continue;
+    if (best == null || s.submittedAt.isAfter(best.submittedAt)) best = s;
+  }
+  return best;
+}
+
+/// Latest submission per student for an assignment (teacher/admin view).
+List<SubmissionModel> latestSubmissionsForAssignment(
+  List<SubmissionModel> submissions,
+  String assignmentId,
+) {
+  final map = <String, SubmissionModel>{};
+  for (final s in submissions.where((x) => x.assignmentId == assignmentId)) {
+    final cur = map[s.studentId];
+    if (cur == null || s.submittedAt.isAfter(cur.submittedAt)) {
+      map[s.studentId] = s;
+    }
+  }
+  return map.values.toList()
+    ..sort((a, b) => b.submittedAt.compareTo(a.submittedAt));
+}
+
 class AssignmentsScreen extends StatelessWidget {
   final String? teacherId;
   final String? studentId;
@@ -43,6 +74,8 @@ class _AssignmentsView extends StatefulWidget {
 class _AssignmentsViewState extends State<_AssignmentsView>
     with SingleTickerProviderStateMixin {
   late TabController _tabCtrl;
+  /// Keeps list visible when bloc emits [AssignmentOperationSuccess] between snapshots.
+  AssignmentsLoaded? _lastAssignmentsLoaded;
 
   @override
   void initState() {
@@ -63,7 +96,12 @@ class _AssignmentsViewState extends State<_AssignmentsView>
         authState is AuthAuthenticated ? authState.user : null;
     final canCreate =
         user?.role == 'teacher' || user?.role == 'admin';
-    final isStudent = user?.role == 'student';
+    final showSubmissionUi = (user?.role == 'student' ||
+            user?.role == 'parent') &&
+        (widget.studentId != null &&
+            widget.studentId!.trim().isNotEmpty);
+    final canSubmitAsStudent = user?.role == 'student';
+    final showTeacherGrading = canCreate && !showSubmissionUi;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -90,15 +128,15 @@ class _AssignmentsViewState extends State<_AssignmentsView>
       ),
       body: BlocConsumer<AssignmentsBloc, AssignmentsState>(
         listener: (ctx, state) {
+          if (state is AssignmentsLoaded) {
+            _lastAssignmentsLoaded = state;
+          }
           if (state is AssignmentOperationSuccess) {
             ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
               content: Text(state.message),
               backgroundColor: AppColors.success,
               behavior: SnackBarBehavior.floating,
             ));
-            ctx.read<AssignmentsBloc>().add(AssignmentsLoadRequested(
-                teacherId: widget.teacherId,
-                studentId: widget.studentId));
           } else if (state is AssignmentsError) {
             ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
               content: Text(state.message),
@@ -111,17 +149,25 @@ class _AssignmentsViewState extends State<_AssignmentsView>
           if (state is AssignmentsLoading) {
             return const Center(child: CircularProgressIndicator());
           }
-          if (state is AssignmentsLoaded) {
+          final loaded = state is AssignmentsLoaded
+              ? state
+              : (state is AssignmentOperationSuccess
+                  ? _lastAssignmentsLoaded
+                  : null);
+          if (loaded != null) {
             return TabBarView(
               controller: _tabCtrl,
               children: [
                 _AssignmentList(
-                  assignments: state.upcoming,
+                  assignments: loaded.upcoming,
                   emptyTitle: 'No upcoming assignments',
                   emptySubtitle: 'All caught up!',
                   canCreate: canCreate,
-                  isStudent: isStudent,
-                  studentId: widget.studentId,
+                  submissions: loaded.submissions,
+                  viewerStudentId: widget.studentId,
+                  showSubmissionUi: showSubmissionUi,
+                  showTeacherGrading: showTeacherGrading,
+                  canSubmit: canSubmitAsStudent,
                   onDelete: (id) => ctx
                       .read<AssignmentsBloc>()
                       .add(AssignmentDeleteRequested(id)),
@@ -130,12 +176,15 @@ class _AssignmentsViewState extends State<_AssignmentsView>
                       .add(AssignmentSubmitRequested(sub)),
                 ),
                 _AssignmentList(
-                  assignments: state.overdue,
+                  assignments: loaded.overdue,
                   emptyTitle: 'No overdue assignments',
                   emptySubtitle: 'Great job keeping up!',
                   canCreate: canCreate,
-                  isStudent: isStudent,
-                  studentId: widget.studentId,
+                  submissions: loaded.submissions,
+                  viewerStudentId: widget.studentId,
+                  showSubmissionUi: showSubmissionUi,
+                  showTeacherGrading: showTeacherGrading,
+                  canSubmit: canSubmitAsStudent,
                   onDelete: (id) => ctx
                       .read<AssignmentsBloc>()
                       .add(AssignmentDeleteRequested(id)),
@@ -176,8 +225,11 @@ class _AssignmentList extends StatelessWidget {
   final String emptyTitle;
   final String emptySubtitle;
   final bool canCreate;
-  final bool isStudent;
-  final String? studentId;
+  final List<SubmissionModel> submissions;
+  final String? viewerStudentId;
+  final bool showSubmissionUi;
+  final bool showTeacherGrading;
+  final bool canSubmit;
   final void Function(String) onDelete;
   final void Function(SubmissionModel) onSubmit;
 
@@ -186,8 +238,11 @@ class _AssignmentList extends StatelessWidget {
     required this.emptyTitle,
     required this.emptySubtitle,
     required this.canCreate,
-    required this.isStudent,
-    required this.studentId,
+    required this.submissions,
+    required this.viewerStudentId,
+    required this.showSubmissionUi,
+    required this.showTeacherGrading,
+    required this.canSubmit,
     required this.onDelete,
     required this.onSubmit,
   });
@@ -207,8 +262,11 @@ class _AssignmentList extends StatelessWidget {
       itemBuilder: (_, i) => _AssignmentCard(
         assignment: assignments[i],
         canDelete: canCreate,
-        isStudent: isStudent,
-        studentId: studentId,
+        submissions: submissions,
+        viewerStudentId: viewerStudentId,
+        showSubmissionUi: showSubmissionUi,
+        showTeacherGrading: showTeacherGrading,
+        canSubmit: canSubmit,
         onDelete: onDelete,
         onSubmit: onSubmit,
       ),
@@ -219,16 +277,22 @@ class _AssignmentList extends StatelessWidget {
 class _AssignmentCard extends StatelessWidget {
   final AssignmentModel assignment;
   final bool canDelete;
-  final bool isStudent;
-  final String? studentId;
+  final List<SubmissionModel> submissions;
+  final String? viewerStudentId;
+  final bool showSubmissionUi;
+  final bool showTeacherGrading;
+  final bool canSubmit;
   final void Function(String) onDelete;
   final void Function(SubmissionModel) onSubmit;
 
   const _AssignmentCard({
     required this.assignment,
     required this.canDelete,
-    required this.isStudent,
-    required this.studentId,
+    required this.submissions,
+    required this.viewerStudentId,
+    required this.showSubmissionUi,
+    required this.showTeacherGrading,
+    required this.canSubmit,
     required this.onDelete,
     required this.onSubmit,
   });
@@ -245,6 +309,14 @@ class _AssignmentCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final sub = showSubmissionUi
+        ? submissionForAssignment(
+            submissions, assignment.id, viewerStudentId)
+        : null;
+    final latestForTeacher = showTeacherGrading
+        ? latestSubmissionsForAssignment(submissions, assignment.id)
+        : const <SubmissionModel>[];
+
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       child: Padding(
@@ -260,11 +332,29 @@ class _AssignmentCard extends StatelessWidget {
                           fontWeight: FontWeight.bold,
                           fontSize: 15)),
                 ),
-                if (assignment.isOverdue)
+                if (showSubmissionUi && sub != null)
                   StatusChip(
+                    label: sub.status == AssignmentStatus.graded
+                        ? 'Graded'
+                        : 'Submitted',
+                    color: sub.status == AssignmentStatus.graded
+                        ? AppColors.success
+                        : AppColors.info,
+                  )
+                else if (showTeacherGrading)
+                  StatusChip(
+                    label: latestForTeacher.isEmpty
+                        ? 'No submissions'
+                        : '${latestForTeacher.length} submitted',
+                    color: latestForTeacher.isEmpty
+                        ? AppColors.textHint
+                        : AppColors.info,
+                  )
+                else if (assignment.isOverdue)
+                  const StatusChip(
                       label: 'Overdue', color: AppColors.error)
                 else
-                  StatusChip(
+                  const StatusChip(
                       label: 'Active', color: AppColors.success),
               ],
             ),
@@ -293,6 +383,41 @@ class _AssignmentCard extends StatelessWidget {
                         color: AppColors.textSecondary, fontSize: 12)),
               ],
             ),
+            if (showTeacherGrading) ...[
+              const SizedBox(height: 12),
+              Builder(
+                builder: (context) {
+                  final awaiting = latestForTeacher
+                      .where((s) => s.status == AssignmentStatus.submitted)
+                      .length;
+                  final graded = latestForTeacher
+                      .where((s) => s.status == AssignmentStatus.graded)
+                      .length;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        latestForTeacher.isEmpty
+                            ? 'No students have submitted yet.'
+                            : '$awaiting awaiting grade · $graded graded · ${latestForTeacher.length} student(s)',
+                        style: const TextStyle(
+                            fontSize: 12, color: AppColors.textSecondary),
+                      ),
+                      const SizedBox(height: 4),
+                      TextButton.icon(
+                        onPressed: () => _showTeacherSubmissionsSheet(
+                            context, assignment, latestForTeacher),
+                        icon: const Icon(Icons.rate_review_outlined, size: 18),
+                        label: const Text('Review & grade'),
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 4),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ],
             const SizedBox(height: 8),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -314,19 +439,48 @@ class _AssignmentCard extends StatelessWidget {
                 ),
                 Row(
                   children: [
-                    if (isStudent)
-                      TextButton.icon(
-                        onPressed: () =>
-                            _submitDialog(context),
-                        icon: const Icon(Icons.upload_outlined,
-                            size: 16),
-                        label: const Text('Submit',
-                            style: TextStyle(fontSize: 12)),
-                        style: TextButton.styleFrom(
-                            padding:
-                                const EdgeInsets.symmetric(
-                                    horizontal: 10, vertical: 4)),
-                      ),
+                    if (showSubmissionUi) ...[
+                      if (sub == null && canSubmit)
+                        TextButton.icon(
+                          onPressed: () => _submitDialog(context),
+                          icon: const Icon(Icons.upload_outlined,
+                              size: 16),
+                          label: const Text('Submit',
+                              style: TextStyle(fontSize: 12)),
+                          style: TextButton.styleFrom(
+                              padding:
+                                  const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 4)),
+                        )
+                      else if (sub == null && !canSubmit)
+                        Text(
+                          'Not submitted yet',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppColors.textSecondary.withOpacity(0.95),
+                          ),
+                        )
+                      else if (sub != null) ...[
+                        if (sub.status == AssignmentStatus.submitted)
+                          Text(
+                            'Awaiting teacher grade',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: AppColors.info.withOpacity(0.95),
+                              fontWeight: FontWeight.w500,
+                            ),
+                          )
+                        else if (sub.status == AssignmentStatus.graded)
+                          Text(
+                            '${sub.marksObtained != null ? sub.marksObtained!.toStringAsFixed(0) : '—'} / ${assignment.maxMarks.toStringAsFixed(0)} marks',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.success,
+                            ),
+                          ),
+                      ],
+                    ],
                     if (canDelete)
                       IconButton(
                         icon: const Icon(Icons.delete_outline,
@@ -339,6 +493,108 @@ class _AssignmentCard extends StatelessWidget {
               ],
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  void _showTeacherSubmissionsSheet(
+    BuildContext context,
+    AssignmentModel assignment,
+    List<SubmissionModel> latest,
+  ) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => BlocProvider.value(
+        value: context.read<AssignmentsBloc>(),
+        child: DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.55,
+          minChildSize: 0.35,
+          maxChildSize: 0.92,
+          builder: (_, scrollCtrl) => Column(
+            children: [
+              const SizedBox(height: 8),
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade300,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 8, 0),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        assignment.title,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: latest.isEmpty
+                    ? const Center(child: Text('No submissions yet.'))
+                    : ListView.builder(
+                        controller: scrollCtrl,
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        itemCount: latest.length,
+                        itemBuilder: (_, i) {
+                          final s = latest[i];
+                          final isGraded = s.status == AssignmentStatus.graded;
+                          return ListTile(
+                            title: Text(s.studentName),
+                            subtitle: Text(
+                              isGraded
+                                  ? '${s.marksObtained?.toStringAsFixed(0) ?? '—'} / ${assignment.maxMarks.toStringAsFixed(0)} · ${DateFormat('MMM d, y').format(s.submittedAt)}'
+                                  : 'Awaiting grade · ${DateFormat('MMM d, y').format(s.submittedAt)}',
+                            ),
+                            trailing: TextButton(
+                              onPressed: () {
+                                Navigator.pop(ctx);
+                                _showGradeDialog(context, assignment, s);
+                              },
+                              child: Text(isGraded ? 'Edit' : 'Grade'),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showGradeDialog(
+    BuildContext context,
+    AssignmentModel assignment,
+    SubmissionModel submission,
+  ) {
+    final bloc = context.read<AssignmentsBloc>();
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => BlocProvider.value(
+        value: bloc,
+        child: _GradeSubmissionDialog(
+          assignment: assignment,
+          submission: submission,
         ),
       ),
     );
@@ -400,6 +656,96 @@ class _AssignmentCard extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _GradeSubmissionDialog extends StatefulWidget {
+  final AssignmentModel assignment;
+  final SubmissionModel submission;
+
+  const _GradeSubmissionDialog({
+    required this.assignment,
+    required this.submission,
+  });
+
+  @override
+  State<_GradeSubmissionDialog> createState() =>
+      _GradeSubmissionDialogState();
+}
+
+class _GradeSubmissionDialogState extends State<_GradeSubmissionDialog> {
+  late final TextEditingController _marksCtrl;
+  late final TextEditingController _remarksCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    final m = widget.submission.marksObtained;
+    _marksCtrl = TextEditingController(text: m != null ? m.toString() : '');
+    _remarksCtrl =
+        TextEditingController(text: widget.submission.remarks ?? '');
+  }
+
+  @override
+  void dispose() {
+    _marksCtrl.dispose();
+    _remarksCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final maxM = widget.assignment.maxMarks;
+    return AlertDialog(
+      title: Text('Grade — ${widget.submission.studentName}'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SPMTextField(
+            label: 'Marks (max ${maxM.toStringAsFixed(0)})',
+            controller: _marksCtrl,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          ),
+          const SizedBox(height: 12),
+          SPMTextField(
+            label: 'Remarks (optional)',
+            controller: _remarksCtrl,
+            maxLines: 2,
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: () {
+            final raw = _marksCtrl.text.trim();
+            final m = double.tryParse(raw);
+            if (m == null || m < 0 || m > maxM) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'Enter marks between 0 and ${maxM.toStringAsFixed(0)}.',
+                  ),
+                  backgroundColor: AppColors.error,
+                ),
+              );
+              return;
+            }
+            final data = <String, dynamic>{'marksObtained': m};
+            final r = _remarksCtrl.text.trim();
+            if (r.isNotEmpty) data['remarks'] = r;
+            context.read<AssignmentsBloc>().add(
+                  SubmissionGradeRequested(widget.submission.id, data),
+                );
+            Navigator.pop(context);
+          },
+          child: const Text('Save'),
+        ),
+      ],
     );
   }
 }

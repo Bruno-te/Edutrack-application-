@@ -53,8 +53,11 @@ class AppRouter {
         ));
       case performance:
         final args = settings.arguments as Map<String, String?>?;
+        final sid = args?['studentId']?.trim();
+        final hasStudent = sid != null && sid.isNotEmpty;
         return _build(PerformanceScreen(
-          studentId: args?['studentId'],
+          studentId: hasStudent ? sid : null,
+          loadGlobalAnalytics: !hasStudent,
         ));
       case assignments:
         final args = settings.arguments as Map<String, String?>?;

@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 
 import '../../../core/constants/app_colors.dart';
 import '../../../core/models/attendance_model.dart';
+import '../../../core/models/course_model.dart';
 import '../../../core/models/user_model.dart';
 import '../../../core/services/firestore_service.dart';
 import '../../../core/widgets/shared_widgets.dart';
@@ -129,7 +130,7 @@ class _AttendanceView extends StatelessWidget {
       ),
       builder: (_) => BlocProvider.value(
         value: context.read<AttendanceBloc>(),
-        child: _MarkAttendanceSheet(teacher: teacher),
+        child: _MarkAttendanceSheet(user: teacher),
       ),
     );
   }
@@ -374,8 +375,9 @@ class _AttStat extends StatelessWidget {
 // ── Mark Attendance Sheet ─────────────────────────────────────
 
 class _MarkAttendanceSheet extends StatefulWidget {
-  final UserModel teacher;
-  const _MarkAttendanceSheet({required this.teacher});
+  /// Teacher or admin — must match a course the student is enrolled in.
+  final UserModel user;
+  const _MarkAttendanceSheet({required this.user});
 
   @override
   State<_MarkAttendanceSheet> createState() =>
@@ -386,15 +388,99 @@ class _MarkAttendanceSheetState extends State<_MarkAttendanceSheet> {
   final _studentNameCtrl = TextEditingController();
   final _studentIdCtrl = TextEditingController();
   final _subjectCtrl = TextEditingController();
-  final _classIdCtrl = TextEditingController();
+  final _manualStudentIdCtrl = TextEditingController();
   final _remarksCtrl = TextEditingController();
   AttendanceStatus _status = AttendanceStatus.present;
   DateTime _date = DateTime.now();
 
+  bool _loading = true;
+  List<CourseModel> _courses = const [];
+  List<UserModel> _allStudents = const [];
+  String? _courseId;
+  String? _selectedStudentId;
+
   @override
   void initState() {
     super.initState();
-    _classIdCtrl.text = widget.teacher.classId?.trim() ?? '';
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadCoursesAndStudents());
+  }
+
+  List<CourseModel> _mergedCourses() {
+    final out = List<CourseModel>.from(_courses);
+    final tid = widget.user.classId?.trim();
+    if (tid != null &&
+        tid.isNotEmpty &&
+        !out.any((c) => c.id == tid)) {
+      out.insert(
+        0,
+        CourseModel(
+          id: tid,
+          name: 'My class ($tid)',
+          createdAt: DateTime.now(),
+        ),
+      );
+    }
+    return out;
+  }
+
+  Future<void> _loadCoursesAndStudents() async {
+    final fs = context.read<FirestoreService>();
+    try {
+      final courses = await fs.getCourses();
+      final students = await fs.getUsersByRole('student');
+      if (!mounted) return;
+
+      final merged = List<CourseModel>.from(courses);
+      final tid = widget.user.classId?.trim();
+      if (tid != null &&
+          tid.isNotEmpty &&
+          !merged.any((c) => c.id == tid)) {
+        merged.insert(
+          0,
+          CourseModel(
+            id: tid,
+            name: 'My class ($tid)',
+            createdAt: DateTime.now(),
+          ),
+        );
+      }
+
+      String? initialCourse = tid;
+      if (initialCourse == null || initialCourse.isEmpty) {
+        initialCourse = merged.isNotEmpty ? merged.first.id : null;
+      } else if (!merged.any((c) => c.id == initialCourse)) {
+        initialCourse = merged.isNotEmpty ? merged.first.id : null;
+      }
+
+      setState(() {
+        _courses = courses;
+        _allStudents = students;
+        _loading = false;
+        _courseId = initialCourse;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  List<CourseModel> get _courseDropdownItems => _mergedCourses();
+
+  List<UserModel> _rosterForCourseId(String? courseId) {
+    final cid = courseId?.trim();
+    if (cid == null || cid.isEmpty) return [];
+    final list =
+        _allStudents.where((s) => s.isEnrolledInCourse(cid)).toList();
+    list.sort((a, b) => a.fullName.compareTo(b.fullName));
+    return list;
+  }
+
+  void _applyStudent(UserModel s) {
+    setState(() {
+      _selectedStudentId = s.id;
+      _studentIdCtrl.text = s.id;
+      _studentNameCtrl.text = s.fullName;
+      _manualStudentIdCtrl.clear();
+    });
   }
 
   @override
@@ -402,49 +488,101 @@ class _MarkAttendanceSheetState extends State<_MarkAttendanceSheet> {
     _studentNameCtrl.dispose();
     _studentIdCtrl.dispose();
     _subjectCtrl.dispose();
-    _classIdCtrl.dispose();
+    _manualStudentIdCtrl.dispose();
     _remarksCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _submit() async {
-    if (_studentNameCtrl.text.isEmpty ||
-        _subjectCtrl.text.isEmpty ||
-        _classIdCtrl.text.trim().isEmpty) {
-      return;
-    }
+    if (_subjectCtrl.text.trim().isEmpty) return;
 
-    final studentId = _studentIdCtrl.text.trim();
-    final classId = _classIdCtrl.text.trim();
-    if (studentId.isEmpty || classId.isEmpty) return;
-
-    // Ensure the entered student belongs to the teacher's course.
-    final fs = context.read<FirestoreService>();
-    final studentUser = await fs.getUser(studentId);
-    if (studentUser == null || studentUser.classId != classId) {
+    final courseItems = _mergedCourses();
+    if (courseItems.isEmpty) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Student is not assigned to your course ($classId).'),
+        const SnackBar(
+          content: Text('No course available.'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+    final classId = (_courseId != null &&
+            courseItems.any((c) => c.id == _courseId))
+        ? _courseId!.trim()
+        : courseItems.first.id.trim();
+    if (classId.isEmpty) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Select a course.'),
           backgroundColor: AppColors.error,
         ),
       );
       return;
     }
 
+    var studentId = _manualStudentIdCtrl.text.trim();
+    if (studentId.isEmpty) {
+      studentId = _studentIdCtrl.text.trim();
+    }
+    if (studentId.isEmpty) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Select a student or paste their Account ID.'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+
+    final fs = context.read<FirestoreService>();
+    final studentUser = await fs.getUser(studentId);
+    if (studentUser == null) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No user found for that Account ID. Copy it from the student\'s Profile.',
+          ),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+    if (!studentUser.isEnrolledInCourse(classId)) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'This student is not enrolled in course "$classId". '
+            'In Admin → Courses, assign the student to this course.',
+          ),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+
+    final name = _studentNameCtrl.text.trim().isEmpty
+        ? studentUser.fullName
+        : _studentNameCtrl.text.trim();
+
     final record = AttendanceModel(
       id: '',
-      studentId: _studentIdCtrl.text.trim(),
-      studentName: _studentNameCtrl.text.trim(),
+      studentId: studentId,
+      studentName: name,
       classId: classId,
       subject: _subjectCtrl.text.trim(),
       status: _status,
-      teacherId: widget.teacher.id,
+      teacherId: widget.user.id,
       remarks: _remarksCtrl.text.trim().isEmpty
           ? null
           : _remarksCtrl.text.trim(),
       date: _date,
     );
+    if (!context.mounted) return;
     context.read<AttendanceBloc>().add(AttendanceMarkRequested(record));
     Navigator.pop(context);
   }
@@ -460,6 +598,18 @@ class _MarkAttendanceSheetState extends State<_MarkAttendanceSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final courseItems = _courseDropdownItems;
+    final effectiveCourseId = courseItems.isEmpty
+        ? null
+        : (courseItems.any((c) => c.id == _courseId)
+            ? _courseId
+            : courseItems.first.id);
+    final roster = _rosterForCourseId(effectiveCourseId);
+    final studentDropdownValue =
+        roster.any((s) => s.id == _selectedStudentId)
+            ? _selectedStudentId
+            : null;
+
     return Padding(
       padding: EdgeInsets.only(
         left: 24, right: 24, top: 24,
@@ -481,39 +631,117 @@ class _MarkAttendanceSheetState extends State<_MarkAttendanceSheet> {
                     icon: const Icon(Icons.close)),
               ],
             ),
+            const SizedBox(height: 8),
+            Text(
+              'Pick the course and student. IDs must match Admin → Courses enrollments.',
+              style: TextStyle(
+                fontSize: 12,
+                color: AppColors.textSecondary.withOpacity(0.95),
+                height: 1.35,
+              ),
+            ),
             const SizedBox(height: 16),
-            SPMTextField(
-              label: 'Student Name',
-              hint: 'Full name',
-              controller: _studentNameCtrl,
-            ),
-            const SizedBox(height: 12),
-            SPMTextField(
-              label: 'Student ID',
-              hint: 'STU-001',
-              controller: _studentIdCtrl,
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: SPMTextField(
-                    label: 'Subject',
-                    hint: 'Mathematics',
-                    controller: _subjectCtrl,
+            if (_loading)
+              const Padding(
+                padding: EdgeInsets.all(24),
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (courseItems.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                child: Text(
+                  'No courses found. Ask an admin to create a course and assign you and your students.',
+                  style: TextStyle(
+                    color: AppColors.warning.withOpacity(0.95),
+                    fontSize: 13,
                   ),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: SPMTextField(
-                    label: 'Class ID',
-                    hint: 'Class-10A',
-                    controller: _classIdCtrl,
-                    readOnly: true,
+              )
+            else ...[
+              DropdownButtonFormField<String>(
+                value: effectiveCourseId,
+                items: courseItems
+                    .map(
+                      (c) => DropdownMenuItem(
+                        value: c.id,
+                        child: Text(
+                          c.name.isEmpty ? c.id : '${c.name} (${c.id})',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (v) {
+                  if (v == null) return;
+                  setState(() {
+                    _courseId = v;
+                    _selectedStudentId = null;
+                    _studentIdCtrl.clear();
+                    _studentNameCtrl.clear();
+                    _manualStudentIdCtrl.clear();
+                  });
+                },
+                decoration: const InputDecoration(
+                  labelText: 'Course',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              if (roster.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    'No students enrolled in this course yet. Use Admin → Courses to assign students.',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: AppColors.textSecondary.withOpacity(0.95),
+                    ),
+                  ),
+                )
+              else
+                DropdownButtonFormField<String>(
+                  value: studentDropdownValue,
+                  hint: const Text('Select student'),
+                  items: roster
+                      .map(
+                        (s) => DropdownMenuItem(
+                          value: s.id,
+                          child: Text(
+                            s.fullName,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (id) {
+                    if (id == null) return;
+                    final s = _allStudents.firstWhere((x) => x.id == id);
+                    _applyStudent(s);
+                  },
+                  decoration: const InputDecoration(
+                    labelText: 'Student',
+                    border: OutlineInputBorder(),
                   ),
                 ),
-              ],
-            ),
+              const SizedBox(height: 12),
+              SPMTextField(
+                label: 'Student name',
+                hint: 'Filled when you pick a student',
+                controller: _studentNameCtrl,
+              ),
+              const SizedBox(height: 12),
+              SPMTextField(
+                label: 'Account ID (optional)',
+                hint: 'Paste only if the student is not in the list above',
+                controller: _manualStudentIdCtrl,
+              ),
+              const SizedBox(height: 12),
+              SPMTextField(
+                label: 'Subject',
+                hint: 'Mathematics',
+                controller: _subjectCtrl,
+              ),
+            ],
             const SizedBox(height: 16),
             const Text('Status',
                 style: TextStyle(

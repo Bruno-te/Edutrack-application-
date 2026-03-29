@@ -4,6 +4,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/models/assignment_model.dart';
 import '../../../core/models/attendance_model.dart';
+import '../../../core/models/grade_model.dart';
 import '../../../core/models/user_model.dart';
 import '../../../core/services/firestore_service.dart';
 import '../../../core/widgets/shared_widgets.dart';
@@ -64,7 +65,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
           NavigationDestination(
               icon: Icon(Icons.bar_chart_outlined),
               selectedIcon: Icon(Icons.bar_chart, color: AppColors.primary),
-              label: 'Progress'),
+              label: 'Performance'),
           NavigationDestination(
               icon: Icon(Icons.assignment_outlined),
               selectedIcon: Icon(Icons.assignment, color: AppColors.primary),
@@ -84,119 +85,122 @@ class _StudentHome extends StatefulWidget {
 }
 
 class _StudentHomeState extends State<_StudentHome> {
-  bool _loading = true;
-  double _avgGrade = 0.0;
-  double _attendanceRate = 0.0;
-  int _pendingCount = 0;
-  int _submittedCount = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    final fs = context.read<FirestoreService>();
-
-    final grades = await fs.getGradesForStudent(widget.user.id);
-    final attendance = await fs.getAttendanceForStudent(widget.user.id);
-    final submissions =
-        await fs.getSubmissionsForStudentData(widget.user.id);
-
-    final double avgGrade = grades.isEmpty
-        ? 0.0
-        : grades.fold<double>(0, (p, g) => p + g.percentage) /
-            grades.length.toDouble();
-
-    final attendanceRecords = attendance.length;
-    final attendanceGood = attendance
-        .where((a) =>
-            a.status == AttendanceStatus.present || a.status == AttendanceStatus.late)
-        .length;
-    final double attendanceRate = attendanceRecords == 0
-        ? 0.0
-        : (attendanceGood / attendanceRecords.toDouble()) * 100;
-
-    // Interpret:
-    // - Pending = student submitted but not graded yet
-    // - Submitted = graded
-    final pendingCount =
-        submissions.where((s) => s.status == AssignmentStatus.submitted).length;
-    final submittedCount =
-        submissions.where((s) => s.status == AssignmentStatus.graded).length;
-
-    if (!mounted) return;
-    setState(() {
-      _loading = false;
-      _avgGrade = avgGrade;
-      _attendanceRate = attendanceRate;
-      _pendingCount = pendingCount;
-      _submittedCount = submittedCount;
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
+    final fs = context.read<FirestoreService>();
+
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
         title: const Text('My Dashboard'),
         actions: [ProfileButton(user: widget.user)],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            GreetingBanner(user: widget.user),
-            const SizedBox(height: 20),
-            const SectionHeader(title: 'My Overview'),
-            const SizedBox(height: 12),
-            GridView.count(
-              crossAxisCount: 2,
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              crossAxisSpacing: 12,
-              mainAxisSpacing: 12,
-              childAspectRatio: 1.3,
+      body: StreamBuilder<
+          ({
+            List<GradeModel> grades,
+            List<AttendanceModel> attendance,
+            List<SubmissionModel> submissions,
+          })>(
+        stream: fs.watchStudentHomeData(widget.user.id),
+        builder: (context, snap) {
+          final loading =
+              snap.connectionState == ConnectionState.waiting && !snap.hasData;
+          if (snap.hasError) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  'Could not load overview: ${snap.error}',
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            );
+          }
+
+          final data = snap.data;
+          final grades = data?.grades ?? [];
+          final attendance = data?.attendance ?? [];
+          final submissions = data?.submissions ?? [];
+
+          final double avgGrade = grades.isEmpty
+              ? 0.0
+              : grades.fold<double>(0, (p, g) => p + g.percentage) /
+                  grades.length.toDouble();
+
+          final attendanceRecords = attendance.length;
+          final attendanceGood = attendance
+              .where((a) =>
+                  a.status == AttendanceStatus.present ||
+                  a.status == AttendanceStatus.late)
+              .length;
+          final double attendanceRate = attendanceRecords == 0
+              ? 0.0
+              : (attendanceGood / attendanceRecords.toDouble()) * 100;
+
+          final pendingCount = submissions
+              .where((s) => s.status == AssignmentStatus.submitted)
+              .length;
+          final submittedCount = submissions
+              .where((s) => s.status == AssignmentStatus.graded)
+              .length;
+
+          return SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                StatCard(
-                  label: 'Avg. Grade',
-                  value: _loading ? '—' : '${_avgGrade.toStringAsFixed(1)}%',
-                  icon: Icons.star_outline,
-                  color: AppColors.primary,
+                GreetingBanner(user: widget.user),
+                const SizedBox(height: 20),
+                const SectionHeader(title: 'My Overview'),
+                const SizedBox(height: 12),
+                GridView.count(
+                  crossAxisCount: 2,
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  crossAxisSpacing: 12,
+                  mainAxisSpacing: 12,
+                  childAspectRatio: 1.3,
+                  children: [
+                    StatCard(
+                      label: 'Avg. Grade',
+                      value: loading ? '—' : '${avgGrade.toStringAsFixed(1)}%',
+                      icon: Icons.star_outline,
+                      color: AppColors.primary,
+                    ),
+                    StatCard(
+                      label: 'Attendance',
+                      value: loading
+                          ? '—'
+                          : '${attendanceRate.toStringAsFixed(1)}%',
+                      icon: Icons.check_circle_outline,
+                      color: AppColors.success,
+                    ),
+                    StatCard(
+                      label: 'Pending',
+                      value: loading ? '—' : '$pendingCount',
+                      icon: Icons.assignment_late_outlined,
+                      color: AppColors.warning,
+                    ),
+                    StatCard(
+                      label: 'Graded',
+                      value: loading ? '—' : '$submittedCount',
+                      icon: Icons.assignment_turned_in_outlined,
+                      color: AppColors.secondary,
+                    ),
+                  ],
                 ),
-                StatCard(
-                  label: 'Attendance',
-                  value: _loading ? '—' : '${_attendanceRate.toStringAsFixed(1)}%',
-                  icon: Icons.check_circle_outline,
-                  color: AppColors.success,
-                ),
-                StatCard(
-                  label: 'Pending',
-                  value: _loading ? '—' : '$_pendingCount',
-                  icon: Icons.assignment_late_outlined,
-                  color: AppColors.warning,
-                ),
-                StatCard(
-                  label: 'Submitted',
-                  value: _loading ? '—' : '$_submittedCount',
-                  icon: Icons.assignment_turned_in_outlined,
-                  color: AppColors.secondary,
-                ),
-              ],
-            ),
             const SizedBox(height: 24),
             const SectionHeader(title: 'Upcoming Deadlines'),
             const SizedBox(height: 12),
-            const EmptyState(
-              icon: Icons.assignment_outlined,
-              title: 'No upcoming deadlines',
-              subtitle: 'All caught up! Check the Assignments tab.',
+                const EmptyState(
+                  icon: Icons.assignment_outlined,
+                  title: 'No upcoming deadlines',
+                  subtitle: 'All caught up! Check the Assignments tab.',
+                ),
+              ],
             ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
@@ -253,7 +257,7 @@ class _ParentDashboardState extends State<ParentDashboard> {
           NavigationDestination(
               icon: Icon(Icons.bar_chart_outlined),
               selectedIcon: Icon(Icons.bar_chart, color: AppColors.primary),
-              label: 'Progress'),
+              label: 'Performance'),
           NavigationDestination(
               icon: Icon(Icons.assignment_outlined),
               selectedIcon: Icon(Icons.assignment, color: AppColors.primary),
@@ -273,56 +277,11 @@ class _ParentHome extends StatefulWidget {
 }
 
 class _ParentHomeState extends State<_ParentHome> {
-  bool _loading = true;
-  int _totalGrades = 0;
-  double _avgGrade = 0;
-  int _attendanceRecords = 0;
-  double _attendanceRate = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    final childId = widget.user.studentId;
-    if (childId == null || childId.isEmpty) {
-      if (mounted) setState(() => _loading = false);
-      return;
-    }
-
-    final fs = context.read<FirestoreService>();
-    final grades = await fs.getGradesForStudent(childId);
-    final attendance = await fs.getAttendanceForStudent(childId);
-
-    final totalGrades = grades.length;
-    final double avgGrade = grades.isEmpty
-        ? 0.0
-        : grades.fold<double>(0, (p, g) => p + g.percentage) /
-            grades.length.toDouble();
-
-    final attendanceRecords = attendance.length;
-    final attendanceGood = attendance
-        .where((a) =>
-            a.status == AttendanceStatus.present || a.status == AttendanceStatus.late)
-        .length;
-    final double attendanceRate = attendanceRecords == 0
-        ? 0.0
-        : (attendanceGood / attendanceRecords.toDouble()) * 100;
-
-    if (!mounted) return;
-    setState(() {
-      _loading = false;
-      _totalGrades = totalGrades;
-      _avgGrade = avgGrade;
-      _attendanceRecords = attendanceRecords;
-      _attendanceRate = attendanceRate;
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
+    final childId = widget.user.studentId?.trim();
+    final fs = context.read<FirestoreService>();
+
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
@@ -336,7 +295,7 @@ class _ParentHomeState extends State<_ParentHome> {
           children: [
             GreetingBanner(user: widget.user),
             const SizedBox(height: 20),
-            if (widget.user.studentId == null)
+            if (childId == null || childId.isEmpty)
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -363,43 +322,95 @@ class _ParentHomeState extends State<_ParentHome> {
             else ...[
               const SectionHeader(title: "Child's Overview"),
               const SizedBox(height: 12),
-              if (_loading)
-                const Center(child: CircularProgressIndicator())
-              else
-                GridView.count(
-                  crossAxisCount: 2,
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  crossAxisSpacing: 12,
-                  mainAxisSpacing: 12,
-                  childAspectRatio: 1.3,
-                  children: [
-                    StatCard(
-                      label: 'Avg. Grade',
-                      value: '${_avgGrade.toStringAsFixed(1)}%',
-                      icon: Icons.star_outline,
-                      color: AppColors.primary,
-                    ),
-                    StatCard(
-                      label: 'Attendance',
-                      value: '${_attendanceRate.toStringAsFixed(1)}%',
-                      icon: Icons.check_circle_outline,
-                      color: AppColors.success,
-                    ),
-                    StatCard(
-                      label: 'Total Grades',
-                      value: '$_totalGrades',
-                      icon: Icons.grade_outlined,
-                      color: AppColors.warning,
-                    ),
-                    StatCard(
-                      label: 'Attendance Records',
-                      value: '$_attendanceRecords',
-                      icon: Icons.how_to_reg_outlined,
-                      color: AppColors.secondary,
-                    ),
-                  ],
-                ),
+              StreamBuilder<
+                  ({
+                    List<GradeModel> grades,
+                    List<AttendanceModel> attendance,
+                    List<SubmissionModel> submissions,
+                  })>(
+                stream: fs.watchStudentHomeData(childId),
+                builder: (context, snap) {
+                  final loading = snap.connectionState ==
+                          ConnectionState.waiting &&
+                      !snap.hasData;
+                  if (snap.hasError) {
+                    return Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Text(
+                        'Could not load: ${snap.error}',
+                        style: const TextStyle(color: AppColors.error),
+                      ),
+                    );
+                  }
+                  final data = snap.data;
+                  final grades = data?.grades ?? [];
+                  final attendance = data?.attendance ?? [];
+                  final submissions = data?.submissions ?? [];
+
+                  final double avgGrade = grades.isEmpty
+                      ? 0.0
+                      : grades.fold<double>(0, (p, g) => p + g.percentage) /
+                          grades.length.toDouble();
+
+                  final attendanceRecords = attendance.length;
+                  final attendanceGood = attendance
+                      .where((a) =>
+                          a.status == AttendanceStatus.present ||
+                          a.status == AttendanceStatus.late)
+                      .length;
+                  final double attendanceRate = attendanceRecords == 0
+                      ? 0.0
+                      : (attendanceGood / attendanceRecords.toDouble()) *
+                          100;
+
+                  final pendingAssign = submissions
+                      .where((s) =>
+                          s.status == AssignmentStatus.submitted)
+                      .length;
+                  final gradedAssign = submissions
+                      .where((s) => s.status == AssignmentStatus.graded)
+                      .length;
+
+                  return GridView.count(
+                    crossAxisCount: 2,
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    crossAxisSpacing: 12,
+                    mainAxisSpacing: 12,
+                    childAspectRatio: 1.3,
+                    children: [
+                      StatCard(
+                        label: 'Avg. Grade',
+                        value: loading
+                            ? '—'
+                            : '${avgGrade.toStringAsFixed(1)}%',
+                        icon: Icons.star_outline,
+                        color: AppColors.primary,
+                      ),
+                      StatCard(
+                        label: 'Attendance',
+                        value: loading
+                            ? '—'
+                            : '${attendanceRate.toStringAsFixed(1)}%',
+                        icon: Icons.check_circle_outline,
+                        color: AppColors.success,
+                      ),
+                      StatCard(
+                        label: 'Awaiting grade',
+                        value: loading ? '—' : '$pendingAssign',
+                        icon: Icons.assignment_late_outlined,
+                        color: AppColors.warning,
+                      ),
+                      StatCard(
+                        label: 'Graded work',
+                        value: loading ? '—' : '$gradedAssign',
+                        icon: Icons.assignment_turned_in_outlined,
+                        color: AppColors.secondary,
+                      ),
+                    ],
+                  );
+                },
+              ),
             ],
           ],
         ),

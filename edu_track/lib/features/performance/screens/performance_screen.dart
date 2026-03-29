@@ -9,14 +9,24 @@ import '../bloc/performance_bloc.dart';
 
 class PerformanceScreen extends StatelessWidget {
   final String? studentId;
-  const PerformanceScreen({super.key, this.studentId});
+  /// Admin / teacher tabs: load school-wide analytics when no [studentId].
+  final bool loadGlobalAnalytics;
+
+  const PerformanceScreen({
+    super.key,
+    this.studentId,
+    this.loadGlobalAnalytics = false,
+  });
 
   @override
   Widget build(BuildContext context) {
     return BlocProvider(
       create: (ctx) => PerformanceBloc(
         firestoreService: ctx.read<FirestoreService>(),
-      )..add(PerformanceLoadRequested(studentId: studentId)),
+      )..add(PerformanceLoadRequested(
+          studentId: studentId,
+          loadGlobalAnalytics: loadGlobalAnalytics,
+        )),
       child: const _PerformanceView(),
     );
   }
@@ -66,7 +76,8 @@ class _PerformanceBody extends StatelessWidget {
       return const EmptyState(
         icon: Icons.bar_chart_outlined,
         title: 'No grade data yet',
-        subtitle: 'Performance charts will appear once grades are added.',
+        subtitle:
+            'Quick stats, averages by subject, and breakdown charts appear once grades are added.',
       );
     }
 
@@ -75,7 +86,6 @@ class _PerformanceBody extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Overview cards
           GridView.count(
             crossAxisCount: 2,
             shrinkWrap: true,
@@ -100,30 +110,34 @@ class _PerformanceBody extends StatelessWidget {
               ),
               StatCard(
                 label: 'Subjects',
-                value:
-                    '${state.subjectAverages.length}',
+                value: '${state.subjectAverages.length}',
                 icon: Icons.book_outlined,
                 color: AppColors.warning,
               ),
               StatCard(
                 label: 'Total Records',
                 value: '${state.grades.length}',
-                icon: Icons.list_alt_outlined,
+                icon: Icons.layers_outlined,
                 color: AppColors.secondary,
               ),
             ],
           ),
           const SizedBox(height: 24),
 
-          // Bar chart: subject averages
           if (state.subjectAverages.isNotEmpty) ...[
             const SectionHeader(title: 'Average by Subject'),
             const SizedBox(height: 12),
             _SubjectBarChart(data: state.subjectAverages),
             const SizedBox(height: 24),
+            const SectionHeader(title: 'Subject Breakdown'),
+            const SizedBox(height: 12),
+            _SubjectBreakdownList(
+              entries: state.subjectAverages.entries.toList()
+                ..sort((a, b) => a.key.compareTo(b.key)),
+            ),
+            const SizedBox(height: 24),
           ],
 
-          // Line chart: term progression
           if (state.termAverages.length >= 2) ...[
             const SectionHeader(title: 'Term Progression'),
             const SizedBox(height: 12),
@@ -131,19 +145,11 @@ class _PerformanceBody extends StatelessWidget {
             const SizedBox(height: 24),
           ],
 
-          // Pie chart: grade distribution
           const SectionHeader(title: 'Grade Distribution'),
           const SizedBox(height: 12),
-          _GradePieChart(grades: state.grades
-              .map((g) => g.letterGrade)
-              .toList()),
-          const SizedBox(height: 24),
-
-          // Subject breakdown table
-          const SectionHeader(title: 'Subject Breakdown'),
-          const SizedBox(height: 12),
-          ...state.subjectAverages.entries.map(
-            (e) => _SubjectRow(subject: e.key, average: e.value),
+          _GradePieChart(
+            grades:
+                state.grades.map((g) => g.letterGrade).toList(),
           ),
         ],
       ),
@@ -151,7 +157,129 @@ class _PerformanceBody extends StatelessWidget {
   }
 }
 
+// ── Subject breakdown (single card, like reference UI) ────────
+
+class _SubjectBreakdownList extends StatelessWidget {
+  final List<MapEntry<String, double>> entries;
+  const _SubjectBreakdownList({required this.entries});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        children: [
+          for (var i = 0; i < entries.length; i++) ...[
+            if (i > 0) const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: _SubjectRowInline(
+                subject: entries[i].key,
+                average: entries[i].value,
+                barColorIndex: i,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _SubjectRowInline extends StatelessWidget {
+  final String subject;
+  final double average;
+  final int barColorIndex;
+
+  const _SubjectRowInline({
+    required this.subject,
+    required this.average,
+    required this.barColorIndex,
+  });
+
+  static const _barColors = [
+    AppColors.chartBlue,
+    AppColors.chartGreen,
+    AppColors.chartOrange,
+    AppColors.chartPurple,
+    AppColors.secondary,
+    AppColors.chartRed,
+  ];
+
+  Color get _barColor => _barColors[barColorIndex % _barColors.length];
+
+  Color get _badgeColor {
+    if (average >= 80) return AppColors.success;
+    if (average >= 60) return AppColors.warning;
+    return AppColors.error;
+  }
+
+  String get _gradeLetter {
+    if (average >= 90) return 'A+';
+    if (average >= 80) return 'A';
+    if (average >= 70) return 'B';
+    if (average >= 60) return 'C';
+    if (average >= 50) return 'D';
+    return 'F';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        GradeChip(grade: _gradeLetter),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(subject,
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 6),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: average / 100,
+                  minHeight: 6,
+                  backgroundColor: AppColors.border,
+                  valueColor: AlwaysStoppedAnimation(_barColor),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 12),
+        Text(
+          '${average.toStringAsFixed(0)}%',
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            color: _badgeColor,
+            fontSize: 14,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 // ── Subject Bar Chart ─────────────────────────────────────────
+
+String _shortSubjectAxisLabel(String subject) {
+  const aliases = {
+    'Mathematics': 'Math',
+    'English': 'Eng',
+    'Science': 'Sci',
+    'History': 'Hist',
+    'Art': 'Art',
+  };
+  if (aliases.containsKey(subject)) return aliases[subject]!;
+  if (subject.length <= 4) return subject;
+  return subject.substring(0, 4);
+}
 
 class _SubjectBarChart extends StatelessWidget {
   final Map<String, double> data;
@@ -159,14 +287,15 @@ class _SubjectBarChart extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final entries = data.entries.toList();
+    final entries = data.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
     final colors = [
       AppColors.chartBlue,
       AppColors.chartGreen,
       AppColors.chartOrange,
       AppColors.chartPurple,
-      AppColors.chartRed,
       AppColors.secondary,
+      AppColors.chartRed,
     ];
 
     return Container(
@@ -210,13 +339,11 @@ class _SubjectBarChart extends StatelessWidget {
                 getTitlesWidget: (v, _) {
                   final idx = v.toInt();
                   if (idx >= entries.length) return const SizedBox();
-                  final label = entries[idx].key;
+                  final label = _shortSubjectAxisLabel(entries[idx].key);
                   return Padding(
                     padding: const EdgeInsets.only(top: 4),
                     child: Text(
-                      label.length > 5
-                          ? '${label.substring(0, 4)}…'
-                          : label,
+                      label,
                       style: const TextStyle(
                           fontSize: 10, color: AppColors.textSecondary),
                     ),
@@ -445,67 +572,3 @@ class _GradePieChart extends StatelessWidget {
   }
 }
 
-// ── Subject Row ───────────────────────────────────────────────
-
-class _SubjectRow extends StatelessWidget {
-  final String subject;
-  final double average;
-  const _SubjectRow({required this.subject, required this.average});
-
-  Color get _color {
-    if (average >= 80) return AppColors.success;
-    if (average >= 60) return AppColors.warning;
-    return AppColors.error;
-  }
-
-  String get _grade {
-    if (average >= 90) return 'A+';
-    if (average >= 80) return 'A';
-    if (average >= 70) return 'B';
-    if (average >= 60) return 'C';
-    if (average >= 50) return 'D';
-    return 'F';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Row(
-          children: [
-            GradeChip(grade: _grade),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(subject,
-                      style: const TextStyle(
-                          fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 6),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
-                    child: LinearProgressIndicator(
-                      value: average / 100,
-                      minHeight: 6,
-                      backgroundColor: AppColors.border,
-                      valueColor: AlwaysStoppedAnimation(_color),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 12),
-            Text('${average.toStringAsFixed(1)}%',
-                style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: _color,
-                    fontSize: 14)),
-          ],
-        ),
-      ),
-    );
-  }
-}

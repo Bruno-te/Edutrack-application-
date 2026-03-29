@@ -71,9 +71,6 @@ class _CoursesScreenState extends State<CoursesScreen> {
     return null;
   }
 
-  int _studentCountForCourse(String courseId) =>
-      _students.where((s) => s.classId == courseId).length;
-
   Future<void> _createCourse() async {
     final id = _courseIdCtrl.text.trim();
     final name = _courseNameCtrl.text.trim();
@@ -251,6 +248,14 @@ class _CoursesScreenState extends State<CoursesScreen> {
                               child: const Text('Assign'),
                             ),
                           ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Students can be in multiple courses. Assigning adds this course without removing others.',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: AppColors.textSecondary.withOpacity(0.9),
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -268,64 +273,91 @@ class _CoursesScreenState extends State<CoursesScreen> {
                   else
                     ..._courses.map((c) {
                       final teacher = _teacherForCourse(c.id);
-                      final studentCount = _studentCountForCourse(c.id);
+                      final enrolled = _students
+                          .where((s) => s.isEnrolledInCourse(c.id))
+                          .toList()
+                        ..sort((a, b) => a.fullName.compareTo(b.fullName));
+                      final studentCount = enrolled.length;
                       return Card(
                         margin: const EdgeInsets.only(bottom: 12),
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      c.name.isEmpty ? c.id : c.name,
-                                      style: const TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      'ID: ${c.id}',
-                                      style: const TextStyle(
-                                        fontSize: 12,
-                                        color: AppColors.textSecondary,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 10),
-                                    Text(
-                                      'Teacher: ${teacher?.fullName ?? 'Unassigned'}',
-                                      style: const TextStyle(
-                                        fontSize: 13,
-                                        color: AppColors.textPrimary,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.end,
+                        child: ExpansionTile(
+                          title: Text(
+                            c.name.isEmpty ? c.id : c.name,
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          subtitle: Text(
+                            'ID: ${c.id} · $studentCount student${studentCount == 1 ? '' : 's'}',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: AppColors.textSecondary,
+                            ),
+                          ),
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    '$studentCount',
+                                    'Teacher: ${teacher?.fullName ?? 'Unassigned'}',
                                     style: const TextStyle(
-                                      fontSize: 22,
-                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13,
+                                      color: AppColors.textPrimary,
                                     ),
                                   ),
+                                  const SizedBox(height: 12),
                                   const Text(
-                                    'Students',
+                                    'Enrolled students',
                                     style: TextStyle(
                                       fontSize: 12,
+                                      fontWeight: FontWeight.w600,
                                       color: AppColors.textSecondary,
                                     ),
                                   ),
+                                  const SizedBox(height: 8),
+                                  if (enrolled.isEmpty)
+                                    Text(
+                                      'No students yet. Use Assign Student above.',
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        color: AppColors.warning.withOpacity(0.95),
+                                      ),
+                                    )
+                                  else
+                                    ...enrolled.map(
+                                      (s) => ListTile(
+                                        dense: true,
+                                        contentPadding: EdgeInsets.zero,
+                                        leading: CircleAvatar(
+                                          radius: 16,
+                                          backgroundColor: AppColors.primary
+                                              .withOpacity(0.12),
+                                          child: Text(
+                                            s.initials,
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w600,
+                                              color: AppColors.primary,
+                                            ),
+                                          ),
+                                        ),
+                                        title: Text(s.fullName),
+                                        subtitle: Text(
+                                          'Account ID: ${s.id}',
+                                          style: const TextStyle(
+                                            fontSize: 11,
+                                            fontFamily: 'monospace',
+                                          ),
+                                        ),
+                                      ),
+                                    ),
                                 ],
-                              )
-                            ],
-                          ),
+                              ),
+                            ),
+                          ],
                         ),
                       );
                     }),

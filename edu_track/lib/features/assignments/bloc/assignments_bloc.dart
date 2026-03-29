@@ -1,5 +1,7 @@
 import 'dart:async';
+
 import 'package:bloc/bloc.dart';
+import 'package:bloc_concurrency/bloc_concurrency.dart';
 import 'package:equatable/equatable.dart';
 
 import '../../../core/models/assignment_model.dart';
@@ -13,7 +15,7 @@ class AssignmentsBloc extends Bloc<AssignmentsEvent, AssignmentsState> {
 
   AssignmentsBloc({required this.firestoreService})
       : super(AssignmentsInitial()) {
-    on<AssignmentsLoadRequested>(_onLoad);
+    on<AssignmentsLoadRequested>(_onLoad, transformer: restartable());
     on<AssignmentAddRequested>(_onAdd);
     on<AssignmentUpdateRequested>(_onUpdate);
     on<AssignmentDeleteRequested>(_onDelete);
@@ -26,28 +28,60 @@ class AssignmentsBloc extends Bloc<AssignmentsEvent, AssignmentsState> {
       Emitter<AssignmentsState> emit) async {
     emit(AssignmentsLoading());
 
-    Stream<List<AssignmentModel>> stream;
-    if (event.teacherId != null) {
-      stream = firestoreService.assignmentsForTeacher(event.teacherId!);
-    } else if (event.studentId != null) {
-      final student = await firestoreService.getUser(event.studentId!);
-      final classId = student?.classId;
-      if (classId != null && classId.isNotEmpty) {
-        stream = firestoreService.assignmentsForClass(classId);
-      } else {
-        // Fallback when student isn't assigned to a class yet.
+    final sid = event.studentId?.trim();
+
+    if (sid != null && sid.isNotEmpty) {
+      final student = await firestoreService.getUser(sid);
+      final courseIds = student?.enrolledCourseIds ?? [];
+      final Stream<List<AssignmentModel>> stream;
+      if (courseIds.isEmpty) {
         stream = firestoreService.allAssignments();
+      } else if (courseIds.length == 1) {
+        stream = firestoreService.assignmentsForClass(courseIds.first);
+      } else {
+        stream = firestoreService.assignmentsForCourses(courseIds);
       }
-    } else {
-      stream = firestoreService.allAssignments();
+
+      final merged = _mergedStudentAssignmentsStream(
+        assignments: stream,
+        submissions: firestoreService.submissionsForStudent(sid),
+        studentId: sid,
+      );
+
+      await emit.forEach<AssignmentsLoaded>(
+        merged,
+        onData: (loaded) => loaded,
+        onError: (_, __) =>
+            const AssignmentsError('Failed to load assignments.'),
+      );
+      return;
     }
 
-    await emit.forEach<List<AssignmentModel>>(
-      stream,
-      onData: (list) => AssignmentsLoaded(
-        assignments: list,
-        studentId: event.studentId,
-      ),
+    final tid = event.teacherId?.trim();
+    if (tid != null && tid.isNotEmpty) {
+      final merged = _mergedStaffAssignmentsStream(
+        assignments: firestoreService.assignmentsForTeacher(tid),
+        submissions: firestoreService.allSubmissions(),
+        includeSubmission: (s, la) =>
+            la.any((a) => a.id == s.assignmentId && a.teacherId == tid),
+      );
+      await emit.forEach<AssignmentsLoaded>(
+        merged,
+        onData: (loaded) => loaded,
+        onError: (_, __) =>
+            const AssignmentsError('Failed to load assignments.'),
+      );
+      return;
+    }
+
+    final mergedAdmin = _mergedStaffAssignmentsStream(
+      assignments: firestoreService.allAssignments(),
+      submissions: firestoreService.allSubmissions(),
+      includeSubmission: (s, la) => la.any((a) => a.id == s.assignmentId),
+    );
+    await emit.forEach<AssignmentsLoaded>(
+      mergedAdmin,
+      onData: (loaded) => loaded,
       onError: (_, __) =>
           const AssignmentsError('Failed to load assignments.'),
     );
@@ -108,4 +142,111 @@ class AssignmentsBloc extends Bloc<AssignmentsEvent, AssignmentsState> {
       emit(AssignmentsError(e.toString()));
     }
   }
+}
+
+/// Teacher / admin: assignments + all submissions, filtered to this scope.
+Stream<AssignmentsLoaded> _mergedStaffAssignmentsStream({
+  required Stream<List<AssignmentModel>> assignments,
+  required Stream<List<SubmissionModel>> submissions,
+  required bool Function(SubmissionModel s, List<AssignmentModel> la)
+      includeSubmission,
+}) {
+  StreamSubscription<List<AssignmentModel>>? subA;
+  StreamSubscription<List<SubmissionModel>>? subS;
+
+  var la = <AssignmentModel>[];
+  var ls = <SubmissionModel>[];
+
+  late final StreamController<AssignmentsLoaded> controller;
+  controller = StreamController<AssignmentsLoaded>(
+    sync: true,
+    onListen: () {
+      void push() {
+        if (controller.isClosed) return;
+        final filtered = ls.where((s) => includeSubmission(s, la)).toList()
+          ..sort((a, b) => b.submittedAt.compareTo(a.submittedAt));
+        controller.add(AssignmentsLoaded(
+          assignments: List<AssignmentModel>.from(la),
+          submissions: filtered,
+          studentId: null,
+        ));
+      }
+
+      subA = assignments.listen(
+        (list) {
+          la = list;
+          push();
+        },
+        onError: controller.addError,
+      );
+      subS = submissions.listen(
+        (list) {
+          ls = list;
+          push();
+        },
+        onError: controller.addError,
+      );
+    },
+    onCancel: () async {
+      await subA?.cancel();
+      await subS?.cancel();
+      subA = null;
+      subS = null;
+    },
+  );
+
+  return controller.stream;
+}
+
+/// Merges assignment list updates with the student’s submission snapshots.
+Stream<AssignmentsLoaded> _mergedStudentAssignmentsStream({
+  required Stream<List<AssignmentModel>> assignments,
+  required Stream<List<SubmissionModel>> submissions,
+  required String studentId,
+}) {
+  StreamSubscription<List<AssignmentModel>>? subA;
+  StreamSubscription<List<SubmissionModel>>? subS;
+
+  var la = <AssignmentModel>[];
+  var ls = <SubmissionModel>[];
+
+  late final StreamController<AssignmentsLoaded> controller;
+  controller = StreamController<AssignmentsLoaded>(
+    sync: true,
+    onListen: () {
+      void push() {
+        if (controller.isClosed) return;
+        final sorted = List<SubmissionModel>.from(ls)
+          ..sort((a, b) => b.submittedAt.compareTo(a.submittedAt));
+        controller.add(AssignmentsLoaded(
+          assignments: List<AssignmentModel>.from(la),
+          submissions: sorted,
+          studentId: studentId,
+        ));
+      }
+
+      subA = assignments.listen(
+        (list) {
+          la = list;
+          push();
+        },
+        onError: controller.addError,
+      );
+      subS = submissions.listen(
+        (list) {
+          ls = list;
+          push();
+        },
+        onError: controller.addError,
+      );
+    },
+    onCancel: () async {
+      await subA?.cancel();
+      await subS?.cancel();
+      subA = null;
+      subS = null;
+    },
+  );
+
+  return controller.stream;
 }
