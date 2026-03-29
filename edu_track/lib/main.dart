@@ -21,7 +21,7 @@ void main() async {
       ],
       child: BlocProvider(
         create: (ctx) => AuthBloc(
-          authService: ctx.read<AuthService>(),
+          authService: ctx.read<AuthService>();
           firestoreService: ctx.read<FirestoreService>(),
         )..add(AuthStarted()),
         child: const SPMApp(),
