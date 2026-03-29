@@ -1,0 +1,119 @@
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+
+import '../models/assignment_model.dart';
+import '../models/course_model.dart';
+import '../models/attendance_model.dart';
+import '../models/grade_model.dart';
+import '../models/user_model.dart';
+
+class FirestoreService {
+  final FirebaseFirestore _db = FirebaseFirestore.instance;
+
+  // ─── Collections ────────────────────────────────────────────────
+  CollectionReference get _users       => _db.collection('users');
+  CollectionReference get _courses     => _db.collection('courses');
+  CollectionReference get _grades      => _db.collection('grades');
+  CollectionReference get _attendance  => _db.collection('attendance');
+  CollectionReference get _assignments => _db.collection('assignments');
+  CollectionReference get _submissions => _db.collection('submissions');
+
+  // ═══════════════════════════════════════════════════════════════
+  // USERS
+  // ═══════════════════════════════════════════════════════════════
+
+  Future<void> createUser(UserModel user) async {
+    await _users.doc(user.id).set(user.toMap());
+  }
+
+  Future<UserModel?> getUser(String uid) async {
+    final doc = await _users.doc(uid).get();
+    if (!doc.exists) return null;
+    return UserModel.fromFirestore(doc);
+  }
+
+  Future<List<UserModel>> getUsersByRole(String role) async {
+    final snap = await _users.where('role', isEqualTo: role).get();
+    final list = snap.docs.map(UserModel.fromFirestore).toList();
+    list.sort((a, b) => a.fullName.compareTo(b.fullName));
+    return list;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // COURSES (admin management)
+  // ═══════════════════════════════════════════════════════════════
+
+  Future<void> upsertCourse(CourseModel course) async {
+    await _courses.doc(course.id).set(course.toMap());
+  }
+
+  Future<List<CourseModel>> getCourses() async {
+    final snap = await _courses.get();
+    final list = snap.docs.map(CourseModel.fromFirestore).toList();
+    list.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    return list;
+  }
+
+  Future<void> deleteCourse(String courseId) async {
+    await _courses.doc(courseId).delete();
+  }
+
+  Future<void> assignTeacherToCourse(String teacherId, String courseId) async {
+    await updateUser(teacherId, {'classId': courseId});
+  }
+
+  /// Adds [courseId] to each student's `courseIds` without removing prior
+  /// enrollments (multi-course support). Legacy `classId` is unchanged.
+  Future<void> assignStudentsToCourse(
+    List<String> studentIds,
+    String courseId,
+  ) async {
+    if (courseId.trim().isEmpty) return;
+    final cid = courseId.trim();
+    final batch = _db.batch();
+    for (final sid in studentIds) {
+      batch.update(_users.doc(sid), {
+        'courseIds': FieldValue.arrayUnion([cid]),
+      });
+    }
+    await batch.commit();
+  }
+
+  // Convenience: when you have a classId but not its display name.
+  Future<CourseModel?> getCourseById(String courseId) async {
+    final doc = await _courses.doc(courseId).get();
+    if (!doc.exists) return null;
+    return CourseModel.fromFirestore(doc);
+  }
+
+  Future<void> updateUser(String uid, Map<String, dynamic> data) async {
+    await _users.doc(uid).update(data);
+  }
+
+  /// Sets the parent's `studentId` to the child's Firebase user id (Account ID).
+  Future<void> linkParentToChild({
+    required String parentUserId,
+    required String childStudentUserId,
+  }) async {
+    await updateUser(parentUserId, {'studentId': childStudentUserId});
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // GRADES
+  // ═══════════════════════════════════════════════════════════════
+
+  Future<String> addGrade(GradeModel grade) async {
+    final ref = await _grades.add(grade.toMap());
+    return ref.id;
+  }
+
+  Future<void> updateGrade(String id, Map<String, dynamic> data) async {
+    await _grades.doc(id).update(data);
+  }
+
+  Future<void> deleteGrade(String id) async {
+    await _grades.doc(id).delete();
+  }
+
+  St
