@@ -1,11 +1,11 @@
-# 📚 Student Performance Monitor (SPM)
+# Student Performance Monitor (SPM)
 ### Flutter + BLoC + Firebase Firestore
 
 A full-featured, production-ready mobile app to track student grades, attendance, assignments, and performance analytics — with role-based access for **Admins**, **Teachers**, **Students**, and **Parents**.
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 lib/
@@ -59,7 +59,7 @@ lib/
 
 ---
 
-## 🔥 Firebase Collections
+## Firebase Collections
 
 | Collection      | Description                              |
 |-----------------|------------------------------------------|
@@ -76,15 +76,15 @@ lib/
 
 | Feature              | Admin | Teacher | Student | Parent |
 |----------------------|:-----:|:-------:|:-------:|:------:|
-| View All Grades      | ✅    | ✅      | Own     | Child  |
-| Add/Edit Grades      | ✅    | ✅      | ❌      | ❌     |
-| Mark Attendance      | ✅    | ✅      | ❌      | ❌     |
-| View Attendance      | ✅    | ✅      | Own     | Child  |
-| Create Assignments   | ✅    | ✅      | ❌      | ❌     |
-| Submit Assignments   | ❌    | ❌      | ✅      | ❌     |
-| Grade Submissions    | ✅    | ✅      | ❌      | ❌     |
-| View Performance     | ✅    | ✅      | Own     | Child  |
-| Manage Users         | ✅    | ❌      | ❌      | ❌     |
+| View All Grades      | yes   | yes     | Own     | Child  |
+| Add/Edit Grades      | yes   | yes     | no      | no     |
+| Mark Attendance      | yes   | yes     | no      | no     |
+| View Attendance      | yes   | yes     | Own     | Child  |
+| Create Assignments   | yes   | yes     | no      | no     |
+| Submit Assignments   | no    | no      | yes     | no     |
+| Grade Submissions    | yes   | yes     | no      | no     |
+| View Performance     | yes   | yes     | Own     | Child  |
+| Manage Users         | yes   | no      | no      | no     |
 
 ---
 
@@ -134,7 +134,7 @@ flutter run
 
 ---
 
-## 🌱 Seeding Test Data
+## Seeding Test Data
 
 Edit `lib/core/utils/seed_data.dart` and replace:
 ```dart
@@ -151,7 +151,7 @@ Remove/comment after seeding to avoid duplicates.
 
 ---
 
-## 📦 Key Dependencies
+## Key Dependencies
 
 | Package           | Purpose                         |
 |-------------------|---------------------------------|
@@ -166,7 +166,7 @@ Remove/comment after seeding to avoid duplicates.
 
 ---
 
-## 🎨 Design System
+## Design System
 
 - **Primary Color**: `#1565C0` (Deep Blue)
 - **Font**: Poppins (Google Fonts)
@@ -175,5 +175,5 @@ Remove/comment after seeding to avoid duplicates.
 
 ---
 
-## 📝 License
+## License
 MIT — feel free to modify and use in your own projects.
